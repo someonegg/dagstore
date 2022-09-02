@@ -72,7 +72,6 @@ func Upgrade(underlying Mount, throttler throttle.Throttler, rootdir, key string
 		return nil, fmt.Errorf("underlying mount must support sequential access")
 	case info.AccessSeek && info.AccessRandom:
 		ret.passthrough = true
-		return ret, nil
 	}
 
 	if initial != "" {
@@ -88,11 +87,6 @@ func Upgrade(underlying Mount, throttler throttle.Throttler, rootdir, key string
 }
 
 func (u *Upgrader) Fetch(ctx context.Context) (Reader, error) {
-	if u.passthrough {
-		log.Debugw("fully capable mount; fetching from underlying", "shard", u.key)
-		return u.underlying.Fetch(ctx)
-	}
-
 	// determine if the transient is still alive.
 	// if not, delete it, get the current sync.Once and trigger a refresh.
 	// after it's done, open the resulting transient.
@@ -116,6 +110,11 @@ func (u *Upgrader) Fetch(ctx context.Context) (Reader, error) {
 	// get the current sync under the lock, use it to deduplicate concurrent fetches.
 	once := u.once
 	u.lk.Unlock()
+
+	if u.passthrough {
+		log.Debugw("fully capable mount; fetching from underlying", "shard", u.key)
+		return u.underlying.Fetch(ctx)
+	}
 
 	once.Do(func() {
 		// Create a new file in the partial location.
@@ -278,7 +277,8 @@ func (u *Upgrader) DeleteTransient() error {
 
 	// refuse to delete the transient if it's not being managed by us (i.e. in
 	// our transients root directory).
-	if _, err := filepath.Rel(u.rootdir, u.path); err != nil {
+	if rel, err := filepath.Rel(u.rootdir, u.path); err != nil ||
+		(len(rel) > 3 && rel[0:3] == ".."+string(filepath.Separator)) {
 		log.Debugw("transient is not owned by us; nothing to remove", "shard", u.key)
 		return nil
 	}
